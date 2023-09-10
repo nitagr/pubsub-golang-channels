@@ -5,7 +5,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis"
+	"github.com/google/uuid"
 	"github.com/nitagr/pubsub2/topic"
+	"github.com/nitagr/pubsub2/types"
 )
 
 var wg1 sync.WaitGroup
@@ -19,21 +22,32 @@ var totalMessagesSent int = 0
 var totalMessagesAcknowledged int = 0
 
 type Publisher struct {
-	subscribers []chan interface{}
+	subscribers []chan types.Message
+	client      *redis.Client
 }
 
-func NewPublisher(topicName string) *Publisher {
+func NewPublisher(topicName string, client *redis.Client) *Publisher {
 	return &Publisher{
 		subscribers: topic.TopicMap[topicName],
+		client:      client,
 	}
 }
 
-func (p *Publisher) Publish(message interface{}) {
+func (p *Publisher) Publish(message string) {
 
 	for _, subscriber := range p.subscribers {
-		go func(sub chan interface{}) {
+		go func(sub chan types.Message) {
 			mu1.Lock()
-			sub <- message
+			id := uuid.New()
+			data := types.Message{
+				Id:      id.String(),
+				Message: message,
+			}
+			sub <- data
+
+			key := topic.PUBSUB_MESSAGE_REDIS
+			// p.client.HSet(key, id.String(), message)
+			p.client.HIncrBy(key+":Sent", "totalsent", 1)
 			totalMessagesSent++
 			mu1.Unlock()
 		}(subscriber)
@@ -41,24 +55,16 @@ func (p *Publisher) Publish(message interface{}) {
 	}
 }
 
-func recieveMessagesOnChannels(sub chan interface{}, subscriberType string, ack chan interface{}) {
+func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ack chan interface{}, redisClient *redis.Client) {
 	go func() {
 		for msg := range sub {
-			fmt.Print(subscriberType)
 
-			switch v := msg.(type) {
-			case int:
-				//fmt.Printf("Received an int: %d\n", v)
-			case string:
-				//fmt.Printf("Received a string: %s\n", v)
-			case float64:
-				//fmt.Printf("Received a float64: %f\n", v)
-			default:
-				fmt.Printf("Received an unknown type: %v\n", v)
-			}
+			ack <- msg
+			key := topic.PUBSUB_MESSAGE_REDIS
 
-			data := fmt.Sprintf(" ack %s", msg)
-			ack <- data
+			// redisClient.HDel(key, msg.Id)
+			redisClient.HIncrBy(key+":Recieved", "totalrecieved", 1)
+
 		}
 	}()
 
@@ -73,7 +79,7 @@ func recieveAckOnChannels(ackChannel chan interface{}, wg *sync.WaitGroup) {
 			mu2.Lock()
 			// defer wg.Done()
 			totalMessagesAcknowledged++
-			fmt.Print(ack)
+			_ = ack
 			mu2.Unlock()
 		}
 	}()
@@ -82,17 +88,20 @@ func recieveAckOnChannels(ackChannel chan interface{}, wg *sync.WaitGroup) {
 
 func main() {
 
+	// ns := "Nspubsub" // connecting to redis
+	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+
 	subs1 := topic.AddSubsriberToTopic(topic.TOPIC_CHANNEL_1)
 	subs2 := topic.AddSubsriberToTopic(topic.TOPIC_CHANNEL_2)
 
 	ackChan1 := make(chan interface{})
 	ackChan2 := make(chan interface{})
 
-	publisher1 := NewPublisher(topic.TOPIC_CHANNEL_1)
-	publisher2 := NewPublisher(topic.TOPIC_CHANNEL_2)
+	publisher1 := NewPublisher(topic.TOPIC_CHANNEL_1, redisClient)
+	publisher2 := NewPublisher(topic.TOPIC_CHANNEL_2, redisClient)
 
-	recieveMessagesOnChannels(subs1, "subscriber 1", ackChan1)
-	recieveMessagesOnChannels(subs2, "subscriber 2", ackChan2)
+	recieveMessagesOnChannels(subs1, "subscriber 1", ackChan1, redisClient)
+	recieveMessagesOnChannels(subs2, "subscriber 2", ackChan2, redisClient)
 
 	recieveAckOnChannels(ackChan1, &wg1)
 	recieveAckOnChannels(ackChan2, &wg2)
@@ -104,14 +113,14 @@ func main() {
 		select {
 		case <-timeoutChannel:
 			fmt.Println("------")
-			fmt.Println("totalMessagesSent %d", totalMessagesSent)
-			fmt.Println("totalMessagesAcknowledged %d", totalMessagesAcknowledged)
-			// wg1.Wait()
-
+			time.Sleep(time.Second * 1)
+			fmt.Println("totalMessagesSent %d", redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Sent", "totalsent"))
+			fmt.Println("totalMessagesAcknowledged %d", redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Recieved", "totalrecieved"))
 			return
 		default:
-			publisher1.Publish("Hello, World! publisher 1")
-			publisher2.Publish(100)
+
+			publisher1.Publish("PUB 1111")
+			publisher2.Publish("PUB 2222")
 		}
 	}
 

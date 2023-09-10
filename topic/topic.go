@@ -1,14 +1,19 @@
 package topic
 
-const (
-	TOPIC_CHANNEL_1 = "TOPIC_CHANNEL_1"
-	TOPIC_CHANNEL_2 = "TOPIC_CHANNEL_2"
+import (
+	"github.com/nitagr/pubsub2/types"
 )
 
-var TopicMap = make(map[string][]chan interface{})
+const (
+	TOPIC_CHANNEL_1      = "TOPIC_CHANNEL_1"
+	TOPIC_CHANNEL_2      = "TOPIC_CHANNEL_2"
+	PUBSUB_MESSAGE_REDIS = "PUBSUB_MESSAGE_REDIS"
+)
 
-func AddSubsriberToTopic(topic string) chan interface{} {
-	subs := make(chan interface{})
+var TopicMap = make(map[string][]chan types.Message)
+
+func AddSubsriberToTopic(topic string) chan types.Message {
+	subs := make(chan types.Message)
 	TopicMap[topic] = append(TopicMap[topic], subs)
 	return subs
 }
