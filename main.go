@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -17,9 +18,13 @@ var wg3 sync.WaitGroup
 
 var mu1 sync.Mutex
 var mu2 sync.Mutex
+var mu3 sync.Mutex
 
 var totalMessagesSent int = 0
 var totalMessagesAcknowledged int = 0
+var goLimiter100 = make(chan int, 2000)
+var goLimiter50 = make(chan int, 2000)
+var goLimiter40 = make(chan int, 2000)
 
 type Publisher struct {
 	subscribers []chan types.Message
@@ -36,7 +41,9 @@ func NewPublisher(topicName string, client *redis.Client) *Publisher {
 func (p *Publisher) Publish(message string) {
 
 	for _, subscriber := range p.subscribers {
+		goLimiter100 <- 1
 		go func(sub chan types.Message) {
+
 			mu1.Lock()
 			id := uuid.New()
 			data := types.Message{
@@ -50,29 +57,36 @@ func (p *Publisher) Publish(message string) {
 			p.client.HIncrBy(key+":Sent", "totalsent", 1)
 			totalMessagesSent++
 			mu1.Unlock()
+			time.Sleep(time.Millisecond * 100)
+			<-goLimiter100
 		}(subscriber)
 
 	}
 }
 
 func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ack chan interface{}, redisClient *redis.Client) {
+
+	goLimiter50 <- 1
 	go func() {
 		for msg := range sub {
 
 			ack <- msg
 			key := topic.PUBSUB_MESSAGE_REDIS
-
-			// redisClient.HDel(key, msg.Id)
+			mu3.Lock()
+			redisClient.HDel(key, msg.Id)
 			redisClient.HIncrBy(key+":Recieved", "totalrecieved", 1)
+			mu3.Unlock()
 
 		}
+		<-goLimiter50
 	}()
 
 }
 
 func recieveAckOnChannels(ackChannel chan interface{}, wg *sync.WaitGroup) {
 	// var wg sync.WaitGroup
-	// wg.Add(1)
+	// wg.Add
+	goLimiter40 <- 1
 	go func() {
 		// defer wg.Done()
 		for ack := range ackChannel {
@@ -82,6 +96,7 @@ func recieveAckOnChannels(ackChannel chan interface{}, wg *sync.WaitGroup) {
 			_ = ack
 			mu2.Unlock()
 		}
+		<-goLimiter40
 	}()
 
 }
@@ -113,9 +128,14 @@ func main() {
 		select {
 		case <-timeoutChannel:
 			fmt.Println("------")
-			time.Sleep(time.Second * 1)
-			fmt.Println("totalMessagesSent %d", redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Sent", "totalsent"))
-			fmt.Println("totalMessagesAcknowledged %d", redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Recieved", "totalrecieved"))
+
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			fmt.Printf("Allocated memory: %d MB\n", memStats.Alloc/1000000)
+			fmt.Printf("Total memory in use: %d MB\n", memStats.TotalAlloc/1000000)
+
+			fmt.Println("totalMessagesSent", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Sent", "totalsent")))
+			fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Recieved", "totalrecieved")))
 			return
 		default:
 
