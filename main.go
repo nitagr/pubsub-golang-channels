@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"time"
 
@@ -22,9 +21,9 @@ var mu3 sync.Mutex
 
 var totalMessagesSent int = 0
 var totalMessagesAcknowledged int = 0
-var goLimiter100 = make(chan int, 2000)
-var goLimiter50 = make(chan int, 2000)
-var goLimiter40 = make(chan int, 2000)
+var goLimiter100 = make(chan int, 50)
+var goLimiter50 = make(chan int, 50)
+var goLimiter40 = make(chan int, 50)
 
 type Publisher struct {
 	subscribers []chan types.Message
@@ -40,28 +39,32 @@ func NewPublisher(topicName string, client *redis.Client) *Publisher {
 
 func (p *Publisher) Publish(message string) {
 
-	for _, subscriber := range p.subscribers {
-		goLimiter100 <- 1
-		go func(sub chan types.Message) {
+	go func(message string) {
 
-			mu1.Lock()
+		goLimiter100 <- 1
+		key := topic.PUBSUB_MESSAGE_REDIS
+		p.client.Expire(key, time.Second*60*60)
+
+		for _, subscriber := range p.subscribers {
+
 			id := uuid.New()
 			data := types.Message{
 				Id:      id.String(),
 				Message: message,
 			}
-			sub <- data
+			subscriber <- data
 
-			key := topic.PUBSUB_MESSAGE_REDIS
-			// p.client.HSet(key, id.String(), message)
+			mu1.Lock()
+			p.client.HSet(key, id.String(), message)
 			p.client.HIncrBy(key+":Sent", "totalsent", 1)
 			totalMessagesSent++
 			mu1.Unlock()
-			time.Sleep(time.Millisecond * 100)
-			<-goLimiter100
-		}(subscriber)
 
-	}
+		}
+		<-goLimiter100
+
+	}(message)
+
 }
 
 func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ack chan interface{}, redisClient *redis.Client) {
@@ -73,6 +76,7 @@ func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ac
 			ack <- msg
 			key := topic.PUBSUB_MESSAGE_REDIS
 			mu3.Lock()
+			// time.Sleep(time.Millisecond * 200)
 			redisClient.HDel(key, msg.Id)
 			redisClient.HIncrBy(key+":Recieved", "totalrecieved", 1)
 			mu3.Unlock()
@@ -128,11 +132,6 @@ func main() {
 		select {
 		case <-timeoutChannel:
 			fmt.Println("------")
-
-			var memStats runtime.MemStats
-			runtime.ReadMemStats(&memStats)
-			fmt.Printf("Allocated memory: %d MB\n", memStats.Alloc/1000000)
-			fmt.Printf("Total memory in use: %d MB\n", memStats.TotalAlloc/1000000)
 
 			fmt.Println("totalMessagesSent", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Sent", "totalsent")))
 			fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Recieved", "totalrecieved")))
