@@ -1,13 +1,11 @@
 package types
 
-import "github.com/go-redis/redis"
+import "time"
 
 type Message struct {
-	Id      string
-	Message interface{}
-}
-
-type Publisher struct {
-	Subscribers []chan Message
-	Client      *redis.Client
+	Id           string
+	TopicName    string
+	SubscriberId string
+	Message      interface{}
+	CreatedAt    time.Time
 }

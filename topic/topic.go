@@ -1,19 +1,17 @@
 package topic
 
 import (
+	"github.com/google/uuid"
 	"github.com/nitagr/pubsub2/types"
 )
 
-const (
-	TOPIC_CHANNEL_1      = "TOPIC_CHANNEL_1"
-	TOPIC_CHANNEL_2      = "TOPIC_CHANNEL_2"
-	PUBSUB_MESSAGE_REDIS = "PUBSUB_MESSAGE_REDIS"
-)
-
-var TopicMap = make(map[string][]chan types.Message)
+var TopicMap = make(map[string][]string)
+var ChannelSubscriberMap = make(map[string]chan types.Message)
 
 func AddSubsriberToTopic(topic string) chan types.Message {
 	subs := make(chan types.Message)
-	TopicMap[topic] = append(TopicMap[topic], subs)
+	subscriberId := uuid.New()
+	TopicMap[topic] = append(TopicMap[topic], subscriberId.String())
+	ChannelSubscriberMap[subscriberId.String()] = subs
 	return subs
 }

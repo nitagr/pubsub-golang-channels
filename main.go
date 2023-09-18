@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/google/uuid"
+	"github.com/nitagr/pubsub2/constants"
 	"github.com/nitagr/pubsub2/topic"
 	"github.com/nitagr/pubsub2/types"
 )
@@ -27,14 +29,16 @@ var goLimiter50 = make(chan int, 10)
 var goLimiter40 = make(chan int, 10)
 
 type Publisher struct {
-	subscribers []chan types.Message
-	client      *redis.Client
+	subscriberIds []string
+	client        *redis.Client
+	topicName     string
 }
 
 func NewPublisher(topicName string, client *redis.Client) *Publisher {
 	return &Publisher{
-		subscribers: topic.TopicMap[topicName],
-		client:      client,
+		subscriberIds: topic.TopicMap[topicName],
+		topicName:     topicName,
+		client:        client,
 	}
 }
 
@@ -42,20 +46,30 @@ func (p *Publisher) Publish(message string) {
 	goLimiter100 <- 1
 	go func(message string) {
 
-		key := topic.PUBSUB_MESSAGE_REDIS
+		key := constants.PUBSUB_MESSAGE_REDIS
 		p.client.Expire(key, time.Second*60*60)
-		for _, subscriber := range p.subscribers {
+		for _, subscriberId := range p.subscriberIds {
 
 			mu1.Lock()
-			id := uuid.New()
+			subscriber := topic.ChannelSubscriberMap[subscriberId]
+			msgId := uuid.New()
 			data := types.Message{
-				Id:      id.String(),
-				Message: message,
+				Id:           msgId.String(),
+				Message:      message,
+				SubscriberId: subscriberId,
+				TopicName:    p.topicName,
+				CreatedAt:    time.Now(),
 			}
 			subscriber <- data
 
-			p.client.HSet(key, id.String(), message)
-			p.client.HIncrBy(key+":Sent", "totalsent", 1)
+			jsonData, err := json.Marshal(data)
+
+			if err != nil {
+				panic(err)
+			}
+
+			p.client.HSet(key, msgId.String(), jsonData)
+			p.client.HIncrBy(key+constants.SENT, "totalsent", 1)
 			totalMessagesSent++
 			mu1.Unlock()
 
@@ -71,18 +85,18 @@ func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ac
 	go func() {
 
 		for msg := range sub {
-			key := topic.PUBSUB_MESSAGE_REDIS
+			key := constants.PUBSUB_MESSAGE_REDIS
 			id := uuid.New()
-			redisClient.HSet(key+":RECV", id.String(), msg.Id)
-			redisClient.HIncrBy(key+":Recieved", "totalrecieved", 1)
+			fmt.Println("msg", msg.Id)
+			redisClient.HSet(key+constants.ACKNOWLEDGE, id.String(), msg.Id)
+			redisClient.HIncrBy(key+constants.RECEIVED, "totalrecieved", 1)
 			totalMessagesAcknowledged++
 		}
 	}()
 
 }
 
-func removeReceivedMessages(wg *sync.WaitGroup, client *redis.Client) {
-	key := topic.PUBSUB_MESSAGE_REDIS + ":RECV"
+func removeReceivedMessages(key string, wg *sync.WaitGroup, client *redis.Client) {
 	receivedMessageIds, err := client.HGetAll(key).Result()
 	defer wg.Done()
 	if err != nil {
@@ -100,24 +114,29 @@ func removeReceivedMessages(wg *sync.WaitGroup, client *redis.Client) {
 	}()
 
 	for _, value := range receivedMessageIds {
-		client.HDel(topic.PUBSUB_MESSAGE_REDIS, value)
+		client.HDel(constants.PUBSUB_MESSAGE_REDIS, value)
 	}
 
 }
+
+// func retrySendingNotReceivedMessages(key string, wg *sync.WaitGroup, client *redis.Client) {
+// 	key :=
+
+// }
 
 func main() {
 
 	// ns := "Nspubsub" // connecting to redis
 	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 
-	subs1 := topic.AddSubsriberToTopic(topic.TOPIC_CHANNEL_1)
-	subs2 := topic.AddSubsriberToTopic(topic.TOPIC_CHANNEL_2)
+	subs1 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_1)
+	subs2 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_2)
 
 	ackChan1 := make(chan interface{})
 	ackChan2 := make(chan interface{})
 
-	publisher1 := NewPublisher(topic.TOPIC_CHANNEL_1, redisClient)
-	publisher2 := NewPublisher(topic.TOPIC_CHANNEL_2, redisClient)
+	publisher1 := NewPublisher(constants.TOPIC_CHANNEL_1, redisClient)
+	publisher2 := NewPublisher(constants.TOPIC_CHANNEL_2, redisClient)
 
 	recieveMessagesOnChannels(subs1, "subscriber 1", ackChan1, redisClient)
 	recieveMessagesOnChannels(subs2, "subscriber 2", ackChan2, redisClient)
@@ -127,18 +146,25 @@ func main() {
 	for {
 		select {
 		case <-timeoutChannel:
+			time.Sleep(time.Second * 1)
 			fmt.Println("------")
 
-			fmt.Println("totalMessagesSent", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Sent", "totalsent")))
-			fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(topic.PUBSUB_MESSAGE_REDIS+":Recieved", "totalrecieved")))
+			fmt.Println("totalMessagesSent", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.SENT, "totalsent")))
+			fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.RECEIVED, "totalrecieved")))
 			fmt.Println("sent ", totalMessagesSent)
 			fmt.Println("received ", totalMessagesAcknowledged)
 			fmt.Println("---------- CHECKING IF SOME MESSAGES ARE UNSENT------------")
 			time.Sleep(time.Second * 2)
 			var wg sync.WaitGroup
 			wg.Add(1)
-			removeReceivedMessages(&wg, redisClient)
+			keyRecv := constants.PUBSUB_MESSAGE_REDIS + constants.ACKNOWLEDGE
+			go removeReceivedMessages(keyRecv, &wg, redisClient)
 			wg.Wait()
+
+			// wg.Add(1)
+			// keyRetry := constants.PUBSUB_MESSAGE_REDIS + constants.RETRY
+			// go retrySendingNotReceivedMessages(keyRetry, &wg, redisClient)
+
 			return
 		default:
 			// time.Sleep(time.Millisecond * 50)
