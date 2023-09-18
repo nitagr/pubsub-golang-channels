@@ -54,11 +54,13 @@ func (p *Publisher) Publish(message string) {
 			subscriber := topic.ChannelSubscriberMap[subscriberId]
 			msgId := uuid.New()
 			data := types.Message{
-				Id:           msgId.String(),
-				Message:      message,
-				SubscriberId: subscriberId,
-				TopicName:    p.topicName,
-				CreatedAt:    time.Now(),
+				Id:             msgId.String(),
+				Message:        message,
+				SubscriberId:   subscriberId,
+				TopicName:      p.topicName,
+				CreatedAt:      time.Now(),
+				UpdatedAt:      time.Now(),
+				RetryFrequency: 0,
 			}
 			subscriber <- data
 
@@ -83,12 +85,20 @@ func (p *Publisher) Publish(message string) {
 func recieveMessagesOnChannels(sub chan types.Message, subscriberType string, ack chan interface{}, redisClient *redis.Client) {
 
 	go func() {
-
+		key := constants.PUBSUB_MESSAGE_REDIS
+		redisClient.Expire(key+constants.RETRY, time.Second*60*60)
+		redisClient.Expire(key+constants.RECEIVED, time.Second*60*60)
+		redisClient.Expire(key+constants.ACKNOWLEDGE, time.Second*60*60)
 		for msg := range sub {
-			key := constants.PUBSUB_MESSAGE_REDIS
 			id := uuid.New()
-			fmt.Println("msg", msg.Id)
 			redisClient.HSet(key+constants.ACKNOWLEDGE, id.String(), msg.Id)
+			if msg.RetryFrequency > 0 {
+				jsonData, err := json.Marshal(msg)
+				if err != nil {
+					panic(err)
+				}
+				redisClient.HSet(key+constants.RETRY, id.String(), jsonData)
+			}
 			redisClient.HIncrBy(key+constants.RECEIVED, "totalrecieved", 1)
 			totalMessagesAcknowledged++
 		}
@@ -113,16 +123,50 @@ func removeReceivedMessages(key string, wg *sync.WaitGroup, client *redis.Client
 
 	}()
 
+	i := 0
 	for _, value := range receivedMessageIds {
-		client.HDel(constants.PUBSUB_MESSAGE_REDIS, value)
+		if i < len(receivedMessageIds)/2 {
+			client.HDel(constants.PUBSUB_MESSAGE_REDIS, value)
+		} else {
+			break
+		}
+		i++
 	}
 
 }
 
-// func retrySendingNotReceivedMessages(key string, wg *sync.WaitGroup, client *redis.Client) {
-// 	key :=
+func retrySendingNotReceivedMessages(key string, wg *sync.WaitGroup, client *redis.Client) {
+	unsentMessages, err := client.HGetAll(key).Result()
+	if err != nil {
+		panic(err)
+	}
 
-// }
+	defer wg.Done()
+
+	for _, value := range unsentMessages {
+		var retrievedMessage types.Message
+		err = json.Unmarshal([]byte(value), &retrievedMessage)
+		if err != nil {
+			panic(err)
+		}
+
+		subscriberId := retrievedMessage.SubscriberId
+		subscriber := topic.ChannelSubscriberMap[subscriberId]
+
+		retryMessage := types.Message{
+			Id:             retrievedMessage.Id,
+			Message:        retrievedMessage.Message,
+			SubscriberId:   retrievedMessage.SubscriberId,
+			TopicName:      retrievedMessage.TopicName,
+			RetryFrequency: retrievedMessage.RetryFrequency + 1,
+			CreatedAt:      retrievedMessage.CreatedAt,
+			UpdatedAt:      time.Now(),
+		}
+
+		subscriber <- retryMessage
+
+	}
+}
 
 func main() {
 
@@ -161,9 +205,10 @@ func main() {
 			go removeReceivedMessages(keyRecv, &wg, redisClient)
 			wg.Wait()
 
-			// wg.Add(1)
-			// keyRetry := constants.PUBSUB_MESSAGE_REDIS + constants.RETRY
-			// go retrySendingNotReceivedMessages(keyRetry, &wg, redisClient)
+			wg.Add(1)
+			keyRetry := constants.PUBSUB_MESSAGE_REDIS
+			go retrySendingNotReceivedMessages(keyRetry, &wg, redisClient)
+			wg.Wait()
 
 			return
 		default:
