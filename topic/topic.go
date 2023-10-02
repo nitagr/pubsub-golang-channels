@@ -15,3 +15,11 @@ func AddSubsriberToTopic(topic string) chan types.Message {
 	ChannelSubscriberMap[subscriberId.String()] = subs
 	return subs
 }
+
+func CreateSafeChannel() *types.SafeClosingChannel {
+	return &types.SafeClosingChannel{C: make(chan interface{})}
+}
+
+func CloseUnclosedChannels(channels []chan interface{}) {
+
+}

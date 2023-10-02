@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/nitagr/pubsub2/constants"
 	"github.com/nitagr/pubsub2/topic"
 	"github.com/nitagr/pubsub2/types"
+	"github.com/r3labs/sse/v2"
 )
 
 var wg1 sync.WaitGroup
@@ -171,52 +173,75 @@ func retrySendingNotReceivedMessages(key string, wg *sync.WaitGroup, client *red
 func main() {
 
 	// ns := "Nspubsub" // connecting to redis
-	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-
-	subs1 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_1)
-	subs2 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_2)
-
-	ackChan1 := make(chan interface{})
-	ackChan2 := make(chan interface{})
-
-	publisher1 := NewPublisher(constants.TOPIC_CHANNEL_1, redisClient)
-	publisher2 := NewPublisher(constants.TOPIC_CHANNEL_2, redisClient)
-
-	recieveMessagesOnChannels(subs1, "subscriber 1", ackChan1, redisClient)
-	recieveMessagesOnChannels(subs2, "subscriber 2", ackChan2, redisClient)
-
-	timeoutChannel := time.After(time.Second * 2)
-
-	for {
-		select {
-		case <-timeoutChannel:
-			time.Sleep(time.Second * 1)
-			fmt.Println("------")
-
-			fmt.Println("totalMessagesSent", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.SENT, "totalsent")))
-			fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.RECEIVED, "totalrecieved")))
-			fmt.Println("sent ", totalMessagesSent)
-			fmt.Println("received ", totalMessagesAcknowledged)
-			fmt.Println("---------- CHECKING IF SOME MESSAGES ARE UNSENT------------")
-			time.Sleep(time.Second * 2)
-			var wg sync.WaitGroup
-			wg.Add(1)
-			keyRecv := constants.PUBSUB_MESSAGE_REDIS + constants.ACKNOWLEDGE
-			go removeReceivedMessages(keyRecv, &wg, redisClient)
-			wg.Wait()
-
-			wg.Add(1)
-			keyRetry := constants.PUBSUB_MESSAGE_REDIS
-			go retrySendingNotReceivedMessages(keyRetry, &wg, redisClient)
-			wg.Wait()
-
-			return
-		default:
-			// time.Sleep(time.Millisecond * 50)
-			publisher1.Publish("PUB 1111")
-			publisher2.Publish("PUB 2222")
-
+	server := sse.New()
+	server.CreateStream("messages")
+	mux := http.NewServeMux()
+	fmt.Print("Server")
+	ticker := time.NewTicker(1 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				// This code block will execute every time the ticker ticks.
+				fmt.Println("Message Sent")
+				server.Publish("messages", &sse.Event{
+					Data: []byte("ping"),
+				})
+			}
 		}
-	}
+	}()
+	mux.HandleFunc("/events", server.ServeHTTP)
+	http.ListenAndServe(":8080", mux)
+
+	// redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+
+	// subs1 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_1)
+	// subs2 := topic.AddSubsriberToTopic(constants.TOPIC_CHANNEL_2)
+
+	// ackChan1 := make(chan interface{})
+	// ackChan2 := make(chan interface{})
+
+	// publisher1 := NewPublisher(constants.TOPIC_CHANNEL_1, redisClient)
+	// publisher2 := NewPublisher(constants.TOPIC_CHANNEL_2, redisClient)
+
+	// recieveMessagesOnChannels(subs1, "subscriber 1", ackChan1, redisClient)
+	// recieveMessagesOnChannels(subs2, "subscriber 2", ackChan2, redisClient)
+
+	// timeoutChannel := time.After(time.Second * 2)
+
+	// for {
+	// 	select {
+	// 	case <-timeoutChannel:
+	// 		time.Sleep(time.Second * 1)
+	// 		fmt.Println("------")
+	// 		fmt.Print("Nitish")
+
+	// 		fmt.Println("totalMessagesSent", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.SENT, "totalsent")))
+	// 		fmt.Println("totalMessagesAcknowledged ", (redisClient.HGet(constants.PUBSUB_MESSAGE_REDIS+constants.RECEIVED, "totalrecieved")))
+	// 		fmt.Println("sent ", totalMessagesSent)
+	// 		fmt.Println("received ", totalMessagesAcknowledged)
+	// 		fmt.Println("---------- CHECKING IF SOME MESSAGES ARE UNSENT------------")
+	// 		time.Sleep(time.Second * 2)
+	// 		var wg sync.WaitGroup
+	// 		wg.Add(1)
+	// 		keyRecv := constants.PUBSUB_MESSAGE_REDIS + constants.ACKNOWLEDGE
+	// 		go removeReceivedMessages(keyRecv, &wg, redisClient)
+	// 		wg.Wait()
+
+	// 		wg.Add(1)
+	// 		keyRetry := constants.PUBSUB_MESSAGE_REDIS
+	// 		go retrySendingNotReceivedMessages(keyRetry, &wg, redisClient)
+	// 		wg.Wait()
+
+	// 		// topic.CloseUnclosedChannels([]chan {subs1})
+
+	// 		// return
+	// 	default:
+	// 		// time.Sleep(time.Millisecond * 50)
+	// 		publisher1.Publish("PUB 1111")
+	// 		publisher2.Publish("PUB 2222")
+
+	// 	}
+	// }
 
 }
